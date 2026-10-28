@@ -8,6 +8,10 @@ ZONE_X2 = 1700
 ZONE_Y2 = 750
 
 LINE_X = 1300
+CONF = 0.1
+
+def crossed_left(prev_x, curr_x, line_x):
+    return prev_x > line_x and curr_x <= line_x
 
 # Load YOLO model
 model = YOLO("yolo26n.pt")
@@ -43,6 +47,9 @@ if not out.isOpened():
 # Counters
 empty_frames = 0
 total_frames = 0
+seen_ids= set()
+prev_x = {}
+counted = set()
 
 # Process video frame by frame
 while True:
@@ -57,13 +64,15 @@ while True:
     zone = frame[ZONE_Y1:ZONE_Y2, ZONE_X1:ZONE_X2]
 
     # Run YOLO on the cropped zone
-    results = model(
+    results = model.track(
         zone,
+        persist=True,
+        tracker="bytetrack.yaml",
         classes=[39],
-        conf=0.25,
+        conf=CONF,
         device="mps",
         verbose=False
-    )
+        )
 
     # Count frames with zero detections
     if len(results[0].boxes) == 0:
@@ -71,6 +80,10 @@ while True:
 
     # Draw each detected bottle
     for box in results[0].boxes:
+        if box.id is None:
+            continue
+        track_id = int(box.id[0])
+        seen_ids.add(track_id)
         bx1, by1, bx2, by2 = box.xyxy[0].tolist()
         confidence = float(box.conf[0])
 
@@ -79,6 +92,15 @@ while True:
         bx2 = int(bx2 + ZONE_X1)
         by1 = int(by1 + ZONE_Y1)
         by2 = int(by2 + ZONE_Y1)
+
+        centre_x = (bx1 + bx2) // 2
+
+        if track_id in prev_x and track_id not in counted:
+            if crossed_left(prev_x[track_id], centre_x, LINE_X):
+                counted.add(track_id)
+                print(f"Frame {total_frames}: counted ID {track_id}")
+
+        prev_x[track_id] = centre_x
 
         # Draw green bounding box
         cv2.rectangle(
@@ -92,13 +114,16 @@ while True:
         # Display confidence above the box
         cv2.putText(
             frame,
-            f"{confidence:.2f}",
+            f"{track_id} {confidence:.2f}",
             (bx1, max(by1 - 10, 20)),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             (0, 255, 0),
             2
         )
+
+    cv2.putText(frame, f"Count: {len(counted)}", (50, 80),
+                cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 4)
 
     # Draw zone rectangle in yellow
     cv2.rectangle(
@@ -127,4 +152,6 @@ out.release()
 
 print(f"Total frames: {total_frames}")
 print(f"Empty frames: {empty_frames}")
+print(f"Unique ids: {len(seen_ids)}")
+print(f"Bottles counted: {len(counted)}")
 print("Output saved to data/output_zone.mp4")
